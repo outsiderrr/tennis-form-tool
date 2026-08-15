@@ -46,6 +46,10 @@ mkdir -p models && curl -sL -o models/pose_landmarker_full.task \
 # 单维度示意视频（站位/屈膝/垫步/击球后重心）
 .venv/bin/python annotate.py <视频> <landmarks.npz> --t <击球秒> --all
 
+# 两机位事后同步：靠两台手机都看见的同一串挥拍做互相关，不需要网络/时钟同步
+.venv/bin/python sync.py A_landmarks.npz B_landmarks.npz     # 输出 B 相对 A 的偏移秒数与置信度
+.venv/bin/python sync.py --selftest out/X_landmarks.npz     # 自测（人为错开 3.37s，应恢复到一帧内）
+
 # 并排同步对比：两段挥拍按击球时刻对齐、按体型（小腿长）归一化
 .venv/bin/python compare.py A.MOV B.MOV --ta 39.47 --tb 50.89 --labels "我的动作,参考动作"
 ```
@@ -59,7 +63,8 @@ compare.py 的击球时刻从 analyze.py 输出的 `swing_candidates` 里选；�
 - **全身入画**，头顶留余量，人占画面高度 60–80%——缺头会让检测本身失败（实测有效帧从 ~95% 掉到 ~55%）
 - 手机架到胸口以上高度
 - 用 **240fps 慢动作**模式（60fps 常速在快速挥拍段有动作模糊）
-- 背面机位测脚步；侧面机位测引拍/击球点（另拍）
+- 背面机位测脚步；侧面机位测引拍/击球点（另拍或双机同拍都行）
+- 双机位不需要同时按开始：两台各自开录整段不暂停，事后 `sync.py` 自动对齐；开拍时在两台都能看见的位置举手拍一下，峰更尖
 
 ## 已知局限
 
