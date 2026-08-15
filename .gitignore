@@ -3,3 +3,4 @@ out/
 models/*.task
 __pycache__/
 *.pyc
+sessions/

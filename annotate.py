@@ -82,6 +82,7 @@ def main():
     ap.add_argument("--before", type=float, default=1.0)
     ap.add_argument("--after", type=float, default=0.8)
     ap.add_argument("--label", default="")
+    ap.add_argument("--out", default="out/annot")
     args = ap.parse_args()
     dims = list(DIMS) if args.all or not args.dim else [args.dim]
 
@@ -187,7 +188,7 @@ def main():
         frames.append(f)
     cap.release()
 
-    out_dir = Path("out/annot")
+    out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"{Path(args.video).stem}_{args.t:.1f}s"
 

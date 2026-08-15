@@ -16,11 +16,25 @@ mkdir -p models && curl -sL -o models/pose_landmarker_full.task \
 
 注意：mediapipe 1.0.1 在 macOS 上初始化 Metal 会崩（DrishtiMetalHelper check failure），必须用 0.10.x。
 
-## 用法
+## 每周用法（一条命令）
+
+```bash
+# 拍完一段 → 全流程：姿态 → 达标率 → 与上一次并排的进度表 → 四维度示意视频
+.venv/bin/python session.py <视频.MOV> --player me --segments "0-180:定点,180-360:变化" --label "8/22 背面"
+# 结果在 sessions/<player>/<时间>_<视频名>/：progress.md 是进度表，annot/ 是示意视频
+```
+
+## 分步工具
 
 ```bash
 # 单视频分析（骨骼叠加 + 脚步指标 + 挥拍片段切割）
 .venv/bin/python analyze.py <视频.MOV> [--start 秒] [--end 秒] [--cut-swings]
+
+# 全套脚步体检 / 多视频对照 / 段落分列
+.venv/bin/python report.py out/A_landmarks.npz [out/B_landmarks.npz ...] [--segments 0-180:定点,180-360:变化]
+
+# 单维度示意视频（站位/屈膝/垫步/击球后重心）
+.venv/bin/python annotate.py <视频> <landmarks.npz> --t <击球秒> --all
 
 # 并排同步对比：两段挥拍按击球时刻对齐、按体型（小腿长）归一化
 .venv/bin/python compare.py A.MOV B.MOV --ta 39.47 --tb 50.89 --labels "我的动作,参考动作"
@@ -37,8 +51,9 @@ compare.py 的击球时刻从 analyze.py 输出的 `swing_candidates` 里选；�
 - 用 **240fps 慢动作**模式（60fps 常速在快速挥拍段有动作模糊）
 - 背面机位测脚步；侧面机位测引拍/击球点（另拍）
 
-## 已知局限（v0）
+## 已知局限
 
-- 垫步检测受透视污染（像素坐标随人远近变化），待改为髋踝相对高度
-- 挥拍检测依赖手腕可见度，上半身缺失时不可用
-- 2D 投影量：跨机位角度对比会系统性失真，只做同视角对比
+- 2D 投影量：背面机位会低估屈膝幅度；跨机位角度不可直接比，只做同视角对比
+- 挥拍定位靠手腕速度峰 + 视觉规则剔假（身份/深蹲/捡球）；音频击球声方案已测试不可靠，弃用
+- 多人场景：目标锁定按连续性 + 身高，人物长时间被裁出画面时可能留空（宁可留空不锁错）
+- 阈值（150°、1.3–1.8、0.10 等）为原理占位口径，看趋势不抠个位数；正式口径 C 阶前统一定

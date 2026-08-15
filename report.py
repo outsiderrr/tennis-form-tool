@@ -189,7 +189,39 @@ def identity_mask(pts):
     return out, int(bad.sum())
 
 
-def report_one(npz_path, swings=None):
+def parse_segments(spec):
+    """'0-180:定点,180-360:变化' → [(0,180,'定点'),(180,360,'变化')]；None → 全段一个标签"""
+    if not spec:
+        return None
+    out = []
+    for part in spec.split(","):
+        rng, label = part.split(":")
+        a, b = rng.split("-")
+        out.append((float(a), float(b), label.strip()))
+    return out
+
+
+def contact_stats(valid):
+    """一组挥拍的击球瞬间统计（达标率）"""
+    o = {"n": len(valid)}
+    if not valid:
+        return o
+    ks = [p["knee"] for p in valid]
+    o["contact_knee_median"] = round(float(np.median(ks)), 1)
+    o["contact_knee_lt150_ratio"] = round(float(np.mean([k < 150 for k in ks])), 2)
+    sts = [p["stance"] for p in valid if p["stance"] is not None]
+    o["contact_stance_median"] = round(float(np.median(sts)), 2) if sts else None
+    o["contact_stance_ok_ratio"] = round(float(np.mean([1.3 <= x <= 1.8 for x in sts])), 2) if sts else None
+    sinks = [p["sink"] for p in valid if p["sink"] is not None]
+    o["contact_sink_median"] = round(float(np.median(sinks)), 2) if sinks else None
+    rises = [p["rise_after"] for p in valid if p["rise_after"] is not None]
+    o["post_contact_rise_ratio"] = round(float(np.mean([x > 0.08 for x in rises])), 2) if rises else None
+    o["stay_down_ratio"] = round(1 - o["post_contact_rise_ratio"], 2) if rises else None
+    o["pre_hop_ratio"] = round(float(np.mean([p["pre_hop"] for p in valid])), 2)
+    return o
+
+
+def report_one(npz_path, swings=None, segments=None):
     d = np.load(npz_path)
     pts, times, fps = d["pts"], d["times"], float(d["fps"])
     pts, n_bad = identity_mask(pts)
@@ -197,6 +229,14 @@ def report_one(npz_path, swings=None):
     if swings is None:
         swings = swing_events(pts, times, fps, s["med_shin"])
     dur_min = (times[-1] - times[0]) / 60 if len(times) > 1 else 1
+
+    def seg_label(t):
+        if not segments:
+            return "全段"
+        for a, b, lab in segments:
+            if a <= t < b:
+                return lab
+        return "未标注"
 
     r = {"file": Path(npz_path).name, "duration_min": round(dur_min, 2),
          "pose_ratio": round(float(np.mean(~np.isnan(pts[:, L_HIP, 0]))), 2),
@@ -220,8 +260,8 @@ def report_one(npz_path, swings=None):
         h0 = at(s["hip_h"], times, t)
         h_after = at(s["hip_h"], times, t + 0.5)
         h_norm = r["hip_h_median"]
-        pre_hop = any(t - 0.6 <= hp <= t - 0.05 for hp in s["hops"])
-        per.append({"t": round(t, 2), "knee": None if np.isnan(k) else round(k, 1),
+        pre_hop = any(t - 1.2 <= hp <= t - 0.4 for hp in s["hops"])
+        per.append({"t": round(t, 2), "label": seg_label(t), "knee": None if np.isnan(k) else round(k, 1),
                     "stance": None if np.isnan(st) else round(st, 2),
                     "sink": None if np.isnan(h0) else round(h_norm - h0, 2),
                     "rise_after": None if (np.isnan(h0) or np.isnan(h_after)) else round(h_after - h0, 2),
@@ -229,16 +269,10 @@ def report_one(npz_path, swings=None):
     valid = [p for p in per if p["knee"] is not None]
     r["swings"] = len(swings)
     r["swings_measured"] = len(valid)
-    if valid:
-        r["contact_knee_median"] = round(float(np.median([p["knee"] for p in valid])), 1)
-        r["contact_knee_lt150_ratio"] = round(float(np.mean([p["knee"] < 150 for p in valid])), 2)
-        sts = [p["stance"] for p in valid if p["stance"] is not None]
-        r["contact_stance_median"] = round(float(np.median(sts)), 2) if sts else None
-        sinks = [p["sink"] for p in valid if p["sink"] is not None]
-        r["contact_sink_median"] = round(float(np.median(sinks)), 2) if sinks else None
-        rises = [p["rise_after"] for p in valid if p["rise_after"] is not None]
-        r["post_contact_rise_ratio"] = round(float(np.mean([x > 0.08 for x in rises])), 2) if rises else None
-        r["pre_hop_ratio"] = round(float(np.mean([p["pre_hop"] for p in valid])), 2)
+    r.update(contact_stats(valid))
+    if segments:
+        r["by_segment"] = {lab: contact_stats([p for p in valid if p["label"] == lab])
+                           for lab in dict.fromkeys(l for _, _, l in segments)}
     r["per_swing"] = per
     return r
 
@@ -247,9 +281,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("npz", nargs="+")
     ap.add_argument("--swings", default=None, help="仅单文件时可手动指定挥拍时刻，逗号分隔")
+    ap.add_argument("--segments", default=None, help="段落标签，如 0-180:定点,180-360:变化（仅单文件）")
     args = ap.parse_args()
     sw = [float(x) for x in args.swings.split(",")] if args.swings else None
-    reps = [report_one(p, sw if len(args.npz) == 1 else None) for p in args.npz]
+    segs = parse_segments(args.segments) if len(args.npz) == 1 else None
+    reps = [report_one(p, sw if len(args.npz) == 1 else None, segs) for p in args.npz]
 
     keys = [("pose_ratio", "有效帧占比"), ("knee_median", "膝角中位(°)"), ("knee_p10", "膝角p10(°)"),
             ("stance_median", "站位中位(小腿长)"), ("stance_p90", "站位p90"),
@@ -257,12 +293,17 @@ def main():
             ("trunk_tilt_p90", "躯干侧倾p90(°)"), ("ankle_speed_median", "脚步活跃度(小腿长/s)"),
             ("hops_per_min", "垫步/分钟"), ("swings_measured", "可测挥拍数"),
             ("contact_knee_median", "击球瞬间膝角中位(°)"), ("contact_knee_lt150_ratio", "击球屈膝<150°占比"),
-            ("contact_stance_median", "击球站位中位"), ("contact_sink_median", "击球重心下沉量"),
-            ("pre_hop_ratio", "击球前有垫步占比"), ("post_contact_rise_ratio", "击球后重心上浮占比")]
+            ("contact_stance_median", "击球站位中位"), ("contact_stance_ok_ratio", "击球站位达标(1.3–1.8)占比"),
+            ("contact_sink_median", "击球重心下沉量"),
+            ("pre_hop_ratio", "击球前有垫步占比"), ("stay_down_ratio", "击球后留在下面占比")]
     w = max(len(k[1]) for k in keys) + 2
-    print("指标".ljust(w) + "".join(r["file"].replace("_landmarks.npz", "").ljust(18) for r in reps))
+    cols = [(r["file"].replace("_landmarks.npz", ""), r) for r in reps]
+    if len(reps) == 1 and reps[0].get("by_segment"):
+        cols += [(f"  ·{lab}", {**{kk: None for kk, _ in keys}, **st, "swings_measured": st["n"]})
+                 for lab, st in reps[0]["by_segment"].items()]
+    print("指标".ljust(w) + "".join(c.ljust(18) for c, _ in cols))
     for k, label in keys:
-        print(label.ljust(w) + "".join(str(r.get(k, "-")).ljust(18) for r in reps))
+        print(label.ljust(w) + "".join(str(r.get(k, "-") if r.get(k) is not None else "-").ljust(18) for _, r in cols))
     out = Path("out") / ("report_" + "_vs_".join(r["file"].replace("_landmarks.npz", "") for r in reps) + ".json")
     out.write_text(json.dumps(reps, ensure_ascii=False, indent=2))
     print(f"\n详细: {out}")
