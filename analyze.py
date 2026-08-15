@@ -56,10 +56,18 @@ def pick_target(pose_list, w, h, prev=None):
         return None
     cands = []
     for lm in pose_list:
-        ys = np.array([p.y for p in lm]) * h
-        xs = np.array([p.x for p in lm]) * w
-        cands.append((ys.max() - ys.min(), xs.mean(), ys.mean(), lm))
-    if prev is None:
+        vis_pts = [p for p in lm if p.visibility > 0.3]
+        if len(vis_pts) < 6:
+            continue
+        ys = np.array([p.y for p in vis_pts]) * h
+        xs = np.array([p.x for p in vis_pts]) * w
+        height = ys.max() - ys.min()
+        if height > 1.6 * h or height < 0.05 * h:  # 垃圾检测（点散布到画面外）或噪点
+            continue
+        cands.append((height, xs.mean(), ys.mean(), lm))
+    if not cands:
+        return None
+    if prev is None or prev[3] > 180:  # 从未锁定，或目标丢失超过 3s → 重新获取
         return max(cands, key=lambda c: c[0])[3]
     pcx, pcy, ph, missing = prev
     cands.sort(key=lambda c: np.hypot(c[1] - pcx, c[2] - pcy))
