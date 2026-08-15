@@ -104,26 +104,70 @@ def series(pts, times, fps):
     return s
 
 
-def swing_events(pts, times, fps, med_shin):
-    """右腕速度峰 → 挥拍候选（与 analyze.py 一致）"""
+def swing_events(pts, times, fps, med_shin, return_rejected=False):
+    """右腕速度峰 → 挥拍候选，再用视觉规则剔除假挥拍（捡球/弯腰/走动甩手）。
+
+    剔除条件（击球时刻 ±0.1s 内取中位）：
+      1. 身份：人物像素身高 < 0.5×全段中位 → 锁到了远处别人
+      2. 深蹲：髋高于膝的高度/大腿长 < 0.55（尺度无关）→ 捡球
+      3. 手腕低于膝盖且双脚并拢 → 捡球
+    音频击球声方案已测试：室内回声+他人击球+球落地声干扰，不可靠，弃用。
+    """
     n = len(times)
     ok = pts[:, R_WRIST, 2] > VIS_TH
     idx = np.where(ok)[0]
     if len(idx) < fps:
-        return []
+        return ([], []) if return_rejected else []
     wx = np.interp(np.arange(n), idx, pts[idx, R_WRIST, 0])
     wy = np.interp(np.arange(n), idx, pts[idx, R_WRIST, 1])
     spd = np.hypot(np.gradient(wx), np.gradient(wy)) * fps / max(med_shin, 1)
     th = np.nanpercentile(spd, 99) * 0.5
-    ev, i = [], 1
+
+    knee_y = np.where((pts[:, L_KNEE, 2] > VIS_TH) & (pts[:, R_KNEE, 2] > VIS_TH),
+                      (pts[:, L_KNEE, 1] + pts[:, R_KNEE, 1]) / 2, np.nan)
+    hip_ok = (pts[:, L_HIP, 2] > VIS_TH) & (pts[:, R_HIP, 2] > VIS_TH)
+    ank_ok = (pts[:, L_ANKLE, 2] > VIS_TH) & (pts[:, R_ANKLE, 2] > VIS_TH)
+    hip_y = np.where(hip_ok, (pts[:, L_HIP, 1] + pts[:, R_HIP, 1]) / 2, np.nan)
+    ank_y = np.where(ank_ok, (pts[:, L_ANKLE, 1] + pts[:, R_ANKLE, 1]) / 2, np.nan)
+    # 逐帧小腿长做尺度归一（人远近变化时像素距离会变）
+    shin_f = (np.linalg.norm(pts[:, L_KNEE, :2] - pts[:, L_ANKLE, :2], axis=1)
+              + np.linalg.norm(pts[:, R_KNEE, :2] - pts[:, R_ANKLE, :2], axis=1)) / 2
+    shin_f = np.where(ank_ok & (pts[:, L_KNEE, 2] > VIS_TH) & (pts[:, R_KNEE, 2] > VIS_TH) & (shin_f > 1), shin_f, np.nan)
+    stance_f = np.where(ank_ok, np.abs(pts[:, L_ANKLE, 0] - pts[:, R_ANKLE, 0]) / shin_f, np.nan)
+    # 深蹲判据（尺度无关）：髋在膝上方的高度 / 大腿长。站立≈1.0，深蹲≤0.5
+    sq = []
+    for h, k in ((L_HIP, L_KNEE), (R_HIP, R_KNEE)):
+        thigh = np.linalg.norm(pts[:, h, :2] - pts[:, k, :2], axis=1)
+        sq.append(np.where((pts[:, h, 2] > VIS_TH) & (pts[:, k, 2] > VIS_TH) & (thigh > 1),
+                           (pts[:, k, 1] - pts[:, h, 1]) / thigh, np.nan))
+    with np.errstate(all="ignore"):
+        squat = np.nanmax(np.vstack(sq), axis=0)
+    # 身份判据：目标人物像素身高（髋-踝）远小于全段中位 → 锁到了别人
+    body_px = ank_y - hip_y
+    body_med = np.nanmedian(body_px)
+
+    win = max(1, int(fps * 0.1))
+    ev, rejected, i = [], [], 1
     while i < n:
         if spd[i] > th and ok[i]:
             peak = i + int(np.argmax(spd[i:i + int(fps)]))
-            ev.append(float(times[peak]))
+            a, b = max(0, peak - win), min(n, peak + win + 1)
+            def med(arr):
+                seg = arr[a:b]
+                return float(np.nanmedian(seg)) if np.any(~np.isnan(seg)) else np.nan
+            w_y, k_y, st, sqv, bpx = med(wy), med(knee_y), med(stance_f), med(squat), med(body_px)
+            reason = None
+            if not np.isnan(bpx) and not np.isnan(body_med) and bpx < 0.5 * body_med:
+                reason = "疑似锁到别人（人物过小）"
+            elif not np.isnan(sqv) and sqv < 0.55:
+                reason = "深蹲（捡球）"
+            elif (not np.isnan(k_y)) and w_y > k_y and (not np.isnan(st)) and st < 0.6:
+                reason = "手腕低于膝盖且双脚并拢（捡球）"
+            (rejected if reason else ev).append((float(times[peak]), reason) if reason else float(times[peak]))
             i = peak + int(fps * 1.2)
         else:
             i += 1
-    return ev
+    return (ev, rejected) if return_rejected else ev
 
 
 def at(series_arr, times, t, win=0.05):
@@ -132,16 +176,31 @@ def at(series_arr, times, t, win=0.05):
     return float(np.nanmedian(v)) if np.any(~np.isnan(v)) else np.nan
 
 
+def identity_mask(pts):
+    """把「锁到别人」的帧整体置 NaN：人物像素身高（髋-踝）< 0.5×全段中位"""
+    hip_ok = (pts[:, L_HIP, 2] > VIS_TH) & (pts[:, R_HIP, 2] > VIS_TH)
+    ank_ok = (pts[:, L_ANKLE, 2] > VIS_TH) & (pts[:, R_ANKLE, 2] > VIS_TH)
+    body = np.where(hip_ok & ank_ok,
+                    (pts[:, L_ANKLE, 1] + pts[:, R_ANKLE, 1]) / 2 - (pts[:, L_HIP, 1] + pts[:, R_HIP, 1]) / 2, np.nan)
+    med = np.nanmedian(body)
+    bad = ~np.isnan(body) & (body < 0.5 * med)
+    out = pts.copy()
+    out[bad] = np.nan
+    return out, int(bad.sum())
+
+
 def report_one(npz_path, swings=None):
     d = np.load(npz_path)
     pts, times, fps = d["pts"], d["times"], float(d["fps"])
+    pts, n_bad = identity_mask(pts)
     s = series(pts, times, fps)
     if swings is None:
         swings = swing_events(pts, times, fps, s["med_shin"])
     dur_min = (times[-1] - times[0]) / 60 if len(times) > 1 else 1
 
     r = {"file": Path(npz_path).name, "duration_min": round(dur_min, 2),
-         "pose_ratio": round(float(np.mean(~np.isnan(pts[:, L_HIP, 0]))), 2)}
+         "pose_ratio": round(float(np.mean(~np.isnan(pts[:, L_HIP, 0]))), 2),
+         "frames_masked_other_person": n_bad}
     # 常态
     r["knee_median"] = round(float(np.nanmedian(s["knee_min"])), 1)
     r["knee_p10"] = round(float(np.nanpercentile(s["knee_min"], 10)), 1)

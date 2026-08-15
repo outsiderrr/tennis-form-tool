@@ -67,8 +67,11 @@ def pick_target(pose_list, w, h, prev=None):
     if np.hypot(nearest[1] - pcx, nearest[2] - pcy) < 0.6 * ph and nearest[0] > 0.5 * ph:
         return nearest[3]
     biggest = max(cands, key=lambda c: c[0])
-    # 目标刚丢（<2s）且候选比目标小得多 → 是远处别人，跳过
-    if missing < 120 and biggest[0] < 0.6 * ph:
+    # 候选比目标小得多（<0.5 倍身高）→ 是远处别人，永远不切换（宁可留空）
+    if biggest[0] < 0.5 * ph:
+        return None
+    # 目标刚丢（<2s）且候选明显偏小 → 也先等一等
+    if missing < 120 and biggest[0] < 0.7 * ph:
         return None
     return biggest[3]
 
