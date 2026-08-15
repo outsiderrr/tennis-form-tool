@@ -1,7 +1,10 @@
 # tennis-form-tool
 
-网球动作可视化反馈工具 · A 阶（周末流水线）。设计蓝图见
-`~/.gstack/projects/tennis-form-app/outsider-unknown-design-20260815-111019.md`。
+网球动作可视化反馈工具：手机视频 → 骨骼 → 脚步达标率 → 进度表 → 关键时刻卡。
+面向自学的初学者，反馈原则是**可视、可验证、发生在你自己身体上**——先给测量值再给解释。
+
+- **想让 AI 帮你用这个工具**：把 [PROMPT.md](PROMPT.md) 里的提示词发给你的 AI 会话（Claude Code / Codex / Gemini CLI 等）。
+- **想了解项目为什么这么做、当前状态和口径**：读 [CONTEXT.md](CONTEXT.md)。
 
 v0 范围：**脚步分析**（背面机位、下半身指标）——骨骼叠加视频 + 膝角/站位宽度/重心时间线 + 指标 JSON。
 
