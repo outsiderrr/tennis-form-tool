@@ -11,6 +11,7 @@
 """
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -148,30 +149,33 @@ def compute_metrics(pts, times, fps):
     hip_ok = vis(L_HIP) & vis(R_HIP)
     hip_y = np.where(hip_ok, (xy(L_HIP)[:, 1] + xy(R_HIP)[:, 1]) / 2, np.nan)
 
-    # 分腿垫步候选：髋中点的短促上-下振荡（速度过零 + 幅度阈值）
+    # 分腿垫步候选 v1：双踝相对「地面基线」的短促抬升。
+    # 基线取踝部 y 的 1.5s 滚动中位数——人走近走远时基线跟着走，透视稳健；
+    # 只有双脚同时短促离地（0.05~0.45s、抬升 >0.12 小腿长）才算垫步/起跳。
     hops = []
-    hy = hip_y.copy()
-    idx = np.where(~np.isnan(hy))[0]
-    if len(idx) > fps:  # 至少 1 秒有效数据
-        hy_i = np.interp(np.arange(len(hy)), idx, hy[idx])
-        k = max(3, int(fps * 0.08))
-        kernel = np.ones(k) / k
-        smooth = np.convolve(hy_i, kernel, mode="same")
-        vel = np.gradient(smooth) * fps  # px/s，向下为正
-        med_shin = np.nanmedian(shin)
-        up_th = -0.6 * med_shin  # 上升速度阈值：0.6 小腿长/秒
-        i = 1
-        while i < len(vel) - 1:
-            if vel[i] < up_th:  # 快速上升开始
+    med_shin = np.nanmedian(shin)
+    ank_ok = vis(L_ANKLE) & vis(R_ANKLE)
+    ank_y = np.where(ank_ok, (xy(L_ANKLE)[:, 1] + xy(R_ANKLE)[:, 1]) / 2, np.nan)
+    idx = np.where(~np.isnan(ank_y))[0]
+    if len(idx) > fps and med_shin > 1:
+        ay = np.interp(np.arange(len(ank_y)), idx, ank_y[idx])
+        win = int(fps * 1.5) | 1
+        pad = win // 2
+        padded = np.pad(ay, pad, mode="edge")
+        baseline = np.array([np.median(padded[i:i + win]) for i in range(len(ay))])
+        lift = (baseline - ay) / med_shin  # 抬升量（小腿长倍数），向上为正
+        i = 0
+        while i < len(lift):
+            if lift[i] > 0.12 and ank_ok[i]:
                 j = i
-                while j < len(vel) - 1 and vel[j] < 0:
+                while j < len(lift) and lift[j] > 0.05:
                     j += 1
-                rise = smooth[i] - smooth[min(j, len(smooth) - 1)]
-                if rise > 0.10 * med_shin:  # 髋上抬超过 0.1 小腿长 → 记一次垫步/起跳
-                    hops.append(float(times[i]))
-                    i = j + int(fps * 0.4)  # 0.4s 内不重复计
-                    continue
-            i += 1
+                dur = (j - i) / fps
+                if 0.05 <= dur <= 0.45:
+                    hops.append(float(times[i + int(np.argmax(lift[i:j]))]))
+                i = j + int(fps * 0.5)
+            else:
+                i += 1
 
     # 挥拍候选：右腕速度峰（右手持拍）
     swings = []
@@ -191,6 +195,27 @@ def compute_metrics(pts, times, fps):
                 i = peak + int(fps * 1.2)
             else:
                 i += 1
+
+    # 安全占位口径：膝内扣筛查——屈膝时（任一膝角<150°）双膝间距/双踝间距 < 0.70。
+    # 背面机位对这个比值恰好敏感；保守占位阈值，非诊断，正式口径 C 阶前统一定。
+    knee_sep = np.abs(xy(L_KNEE)[:, 0] - xy(R_KNEE)[:, 0])
+    sep_ok = vis(L_KNEE) & vis(R_KNEE) & vis(L_ANKLE) & vis(R_ANKLE) & (ankle_dx > 5)
+    sep_ratio = np.where(sep_ok, knee_sep / np.maximum(ankle_dx, 1e-3), np.nan)
+    # 只在双脚站定时评估（排除跨步换位时双腿交叉的假阳性）：双踝水平速度 < 0.5 小腿长/秒
+    med_shin_v = max(np.nanmedian(shin), 1)
+    ax_l = np.gradient(np.nan_to_num(xy(L_ANKLE)[:, 0])) * fps / med_shin_v
+    ax_r = np.gradient(np.nan_to_num(xy(R_ANKLE)[:, 0])) * fps / med_shin_v
+    planted = (np.abs(ax_l) < 0.5) & (np.abs(ax_r) < 0.5)
+    flexed = ((np.nan_to_num(knee_l, nan=180) < 150) | (np.nan_to_num(knee_r, nan=180) < 150)) & ~np.isnan(sep_ratio)
+    low = flexed & planted & (sep_ratio < 0.70)
+    valgus_events, last_t = [], -1e9
+    for i in np.where(low)[0]:
+        t = float(times[i])
+        if t - last_t > 0.5:
+            valgus_events.append(round(t, 2))
+        last_t = t
+    m["knee_valgus_events"] = valgus_events[:30]
+    m["knee_valgus_note"] = "屈膝时双膝间距/双踝间距<0.70 的时刻；保守占位口径，非诊断"
 
     m["frames_total"] = int(len(times))
     m["frames_with_pose"] = int(np.sum(~np.isnan(pts[:, L_ANKLE, 0])))
@@ -248,6 +273,7 @@ def main():
     ap.add_argument("--end", type=float, default=None)
     ap.add_argument("--out", default="out")
     ap.add_argument("--width", type=int, default=1280)
+    ap.add_argument("--cut-swings", action="store_true", help="按挥拍候选切出 ±2s 叠加片段到 out/swings/")
     args = ap.parse_args()
 
     video = Path(args.video).expanduser()
@@ -262,6 +288,18 @@ def main():
     metrics, series = compute_metrics(pts, times, fps)
     (out_dir / f"{name}_metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2))
     plot(series, times, metrics, out_dir / f"{name}_footwork.png")
+
+    if args.cut_swings and metrics["swing_candidates"]:
+        swing_dir = out_dir / "swings"
+        swing_dir.mkdir(exist_ok=True)
+        for k, t in enumerate(metrics["swing_candidates"], 1):
+            clip = swing_dir / f"{name}_swing{k:02d}_{t:.1f}s.mp4"
+            subprocess.run(["ffmpeg", "-y", "-v", "error",
+                            "-ss", str(max(0, t - 2 - args.start)), "-to", str(t + 2 - args.start),
+                            "-i", str(out_dir / f"{name}_overlay.mp4"),
+                            "-c:v", "libx264", "-crf", "23", "-preset", "fast", "-an", str(clip)],
+                           check=False)
+        print(f"挥拍片段: {swing_dir}/ 共 {len(metrics['swing_candidates'])} 段")
 
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"\n输出: {out_dir}/{name}_overlay.mp4 / _footwork.png / _metrics.json")

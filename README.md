@@ -19,8 +19,16 @@ mkdir -p models && curl -sL -o models/pose_landmarker_full.task \
 ## 用法
 
 ```bash
-.venv/bin/python analyze.py <视频.MOV> [--start 秒] [--end 秒] [--out out] [--width 1280]
+# 单视频分析（骨骼叠加 + 脚步指标 + 挥拍片段切割）
+.venv/bin/python analyze.py <视频.MOV> [--start 秒] [--end 秒] [--cut-swings]
+
+# 并排同步对比：两段挥拍按击球时刻对齐、按体型（小腿长）归一化
+.venv/bin/python compare.py A.MOV B.MOV --ta 39.47 --tb 50.89 --labels "我的动作,参考动作"
 ```
+
+compare.py 的击球时刻从 analyze.py 输出的 `swing_candidates` 里选；两侧可以是
+同一视频的两次挥拍（自我对比），也可以一侧放参考/标准动作片段（同视角拍摄）。
+帧率不同的两段视频（如 60fps vs 240fps）可直接对比——时间轴按秒对齐。
 
 ## 拍摄要求（血泪教训）
 
