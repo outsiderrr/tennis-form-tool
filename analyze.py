@@ -42,6 +42,35 @@ CONNECTIONS = [
 LEFT_IDS = {L_SHOULDER, L_ELBOW, L_WRIST, L_HIP, L_KNEE, L_ANKLE, L_HEEL, L_FOOT}
 
 VIS_TH = 0.5  # 低于此可见度的点不用于指标
+NUM_POSES = 3  # 多人场景检测上限，之后按「最近的人」选目标
+
+
+def pick_target(pose_list, w, h, prev=None):
+    """多人场景锁定目标。规则：
+    1) 与上一帧目标位置连续的候选优先；
+    2) 否则若某候选明显更大（更近）则取它；
+    3) 目标短暂丢失（贴近镜头被裁）时不切到远处小人物——宁可留空，也不锁错。
+    prev = (cx, cy, height_px, missing_frames)
+    """
+    if not pose_list:
+        return None
+    cands = []
+    for lm in pose_list:
+        ys = np.array([p.y for p in lm]) * h
+        xs = np.array([p.x for p in lm]) * w
+        cands.append((ys.max() - ys.min(), xs.mean(), ys.mean(), lm))
+    if prev is None:
+        return max(cands, key=lambda c: c[0])[3]
+    pcx, pcy, ph, missing = prev
+    cands.sort(key=lambda c: np.hypot(c[1] - pcx, c[2] - pcy))
+    nearest = cands[0]
+    if np.hypot(nearest[1] - pcx, nearest[2] - pcy) < 0.6 * ph and nearest[0] > 0.5 * ph:
+        return nearest[3]
+    biggest = max(cands, key=lambda c: c[0])
+    # 目标刚丢（<2s）且候选比目标小得多 → 是远处别人，跳过
+    if missing < 120 and biggest[0] < 0.6 * ph:
+        return None
+    return biggest[3]
 
 
 def angle_deg(a, b, c):
@@ -74,10 +103,12 @@ def run_pose(video, start, end, out_dir, name, overlay_width):
             delegate=BaseOptions.Delegate.CPU,
         ),
         running_mode=vision.RunningMode.VIDEO,
+        num_poses=NUM_POSES,
         min_pose_detection_confidence=0.5,
         min_tracking_confidence=0.5,
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
+    prev_target = None
 
     writer = cv2.VideoWriter(str(out_dir / f"{name}_overlay.mp4"),
                              cv2.VideoWriter_fourcc(*"avc1"), fps, (ow, oh))
@@ -100,10 +131,12 @@ def run_pose(video, start, end, out_dir, name, overlay_width):
         result = landmarker.detect_for_video(Image(image_format=ImageFormat.SRGB, data=rgb), ts_ms)
 
         small = cv2.resize(frame, (ow, oh))
-        if result.pose_landmarks:
-            lm = result.pose_landmarks[0]
+        lm = pick_target(result.pose_landmarks, w, h, prev_target)
+        if lm is not None:
             for j, p in enumerate(lm):
                 pts[i, j] = (p.x * w, p.y * h, p.visibility)
+            ys = pts[i, :, 1]
+            prev_target = (float(pts[i, :, 0].mean()), float(ys.mean()), float(ys.max() - ys.min()), 0)
             draw = {j: (int(pts[i, j, 0] * scale), int(pts[i, j, 1] * scale))
                     for j in range(33) if pts[i, j, 2] > VIS_TH and 0 <= pts[i, j, 1] < h}
             for a, b in CONNECTIONS:
@@ -111,6 +144,8 @@ def run_pose(video, start, end, out_dir, name, overlay_width):
                     cv2.line(small, draw[a], draw[b], (80, 220, 80), 2, cv2.LINE_AA)
             for j, p in draw.items():
                 cv2.circle(small, p, 4, (60, 120, 255) if j in LEFT_IDS else (255, 160, 40), -1, cv2.LINE_AA)
+        elif prev_target is not None:
+            prev_target = (*prev_target[:3], prev_target[3] + 1)
         cv2.putText(small, f"t={times[i]:.2f}s", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         writer.write(small)
         if i % 600 == 0:

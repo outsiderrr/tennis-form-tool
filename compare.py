@@ -21,7 +21,7 @@ from PIL import Image as PILImage, ImageDraw, ImageFont
 
 from mediapipe import Image, ImageFormat
 from mediapipe.tasks.python import BaseOptions, vision
-from analyze import (CONNECTIONS, LEFT_IDS, VIS_TH, angle_deg,
+from analyze import (CONNECTIONS, LEFT_IDS, VIS_TH, NUM_POSES, angle_deg, pick_target,
                      L_HIP, R_HIP, L_KNEE, R_KNEE, L_ANKLE, R_ANKLE)
 
 CANVAS_W, CANVAS_H = 500, 720
@@ -37,7 +37,7 @@ def make_landmarker():
         base_options=BaseOptions(
             model_asset_path=str(Path(__file__).parent / "models/pose_landmarker_full.task"),
             delegate=BaseOptions.Delegate.CPU),
-        running_mode=vision.RunningMode.VIDEO,
+        running_mode=vision.RunningMode.VIDEO, num_poses=NUM_POSES,
         min_pose_detection_confidence=0.5, min_tracking_confidence=0.5))
 
 
@@ -52,6 +52,7 @@ def load_clip(video, t_contact, before, after):
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     lm = make_landmarker()
     frames, pts, rel = [], [], []
+    prev = None
     for fi in range(f0, f1):
         ok, frame = cap.read()
         if not ok:
@@ -59,9 +60,13 @@ def load_clip(video, t_contact, before, after):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = lm.detect_for_video(Image(image_format=ImageFormat.SRGB, data=rgb), int(fi * 1000 / fps))
         p = np.full((33, 3), np.nan, np.float32)
-        if res.pose_landmarks:
-            for j, q in enumerate(res.pose_landmarks[0]):
+        target = pick_target(res.pose_landmarks, w, h, prev)
+        if target is not None:
+            for j, q in enumerate(target):
                 p[j] = (q.x * w, q.y * h, q.visibility)
+            prev = (float(p[:, 0].mean()), float(p[:, 1].mean()), float(p[:, 1].max() - p[:, 1].min()), 0)
+        elif prev is not None:
+            prev = (*prev[:3], prev[3] + 1)
         frames.append(frame)
         pts.append(p)
         rel.append(fi / fps - t_contact)
