@@ -45,12 +45,13 @@ VIS_TH = 0.5  # 低于此可见度的点不用于指标
 NUM_POSES = 3  # 多人场景检测上限，之后按「最近的人」选目标
 
 
-def pick_target(pose_list, w, h, prev=None):
+def pick_target(pose_list, w, h, prev=None, canonical=None):
     """多人场景锁定目标。规则：
     1) 与上一帧目标位置连续的候选优先；
     2) 否则若某候选明显更大（更近）则取它；
     3) 目标短暂丢失（贴近镜头被裁）时不切到远处小人物——宁可留空，也不锁错。
-    prev = (cx, cy, height_px, missing_frames)
+    prev = (cx, cy, height_px, missing_frames)；canonical = 目标人物的长期中位身高（像素）
+    任何时候都不接受身高 < 0.65×canonical 的候选（手持跟拍假设：目标在画面里大小基本稳定）
     """
     if not pose_list:
         return None
@@ -65,6 +66,8 @@ def pick_target(pose_list, w, h, prev=None):
         if height > 1.6 * h or height < 0.05 * h:  # 垃圾检测（点散布到画面外）或噪点
             continue
         cands.append((height, xs.mean(), ys.mean(), lm))
+    if canonical:
+        cands = [c for c in cands if c[0] >= 0.65 * canonical]
     if not cands:
         return None
     if prev is None or prev[3] > 180:  # 从未锁定，或目标丢失超过 3s → 重新获取
@@ -120,6 +123,7 @@ def run_pose(video, start, end, out_dir, name, overlay_width):
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
     prev_target = None
+    accepted_heights = []  # 目标长期身高（像素），用于身份约束
 
     writer = cv2.VideoWriter(str(out_dir / f"{name}_overlay.mp4"),
                              cv2.VideoWriter_fourcc(*"avc1"), fps, (ow, oh))
@@ -142,12 +146,17 @@ def run_pose(video, start, end, out_dir, name, overlay_width):
         result = landmarker.detect_for_video(Image(image_format=ImageFormat.SRGB, data=rgb), ts_ms)
 
         small = cv2.resize(frame, (ow, oh))
-        lm = pick_target(result.pose_landmarks, w, h, prev_target)
+        canonical = float(np.median(accepted_heights)) if len(accepted_heights) >= 30 else None
+        lm = pick_target(result.pose_landmarks, w, h, prev_target, canonical)
         if lm is not None:
             for j, p in enumerate(lm):
                 pts[i, j] = (p.x * w, p.y * h, p.visibility)
             ys = pts[i, :, 1]
-            prev_target = (float(pts[i, :, 0].mean()), float(ys.mean()), float(ys.max() - ys.min()), 0)
+            hgt = float(ys.max() - ys.min())
+            prev_target = (float(pts[i, :, 0].mean()), float(ys.mean()), hgt, 0)
+            accepted_heights.append(hgt)
+            if len(accepted_heights) > 900:
+                accepted_heights.pop(0)
             draw = {j: (int(pts[i, j, 0] * scale), int(pts[i, j, 1] * scale))
                     for j in range(33) if pts[i, j, 2] > VIS_TH and 0 <= pts[i, j, 1] < h}
             for a, b in CONNECTIONS:

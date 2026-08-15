@@ -157,7 +157,7 @@ def swing_events(pts, times, fps, med_shin, return_rejected=False):
                 return float(np.nanmedian(seg)) if np.any(~np.isnan(seg)) else np.nan
             w_y, k_y, st, sqv, bpx = med(wy), med(knee_y), med(stance_f), med(squat), med(body_px)
             reason = None
-            if not np.isnan(bpx) and not np.isnan(body_med) and bpx < 0.5 * body_med:
+            if not np.isnan(bpx) and not np.isnan(body_med) and bpx < 0.65 * body_med:
                 reason = "疑似锁到别人（人物过小）"
             elif not np.isnan(sqv) and sqv < 0.55:
                 reason = "深蹲（捡球）"
@@ -177,13 +177,13 @@ def at(series_arr, times, t, win=0.05):
 
 
 def identity_mask(pts):
-    """把「锁到别人」的帧整体置 NaN：人物像素身高（髋-踝）< 0.5×全段中位"""
+    """把「锁到别人」的帧整体置 NaN：人物像素身高（髋-踝）< 0.65×全段中位"""
     hip_ok = (pts[:, L_HIP, 2] > VIS_TH) & (pts[:, R_HIP, 2] > VIS_TH)
     ank_ok = (pts[:, L_ANKLE, 2] > VIS_TH) & (pts[:, R_ANKLE, 2] > VIS_TH)
     body = np.where(hip_ok & ank_ok,
                     (pts[:, L_ANKLE, 1] + pts[:, R_ANKLE, 1]) / 2 - (pts[:, L_HIP, 1] + pts[:, R_HIP, 1]) / 2, np.nan)
     med = np.nanmedian(body)
-    bad = ~np.isnan(body) & (body < 0.5 * med)
+    bad = ~np.isnan(body) & (body < 0.65 * med)
     out = pts.copy()
     out[bad] = np.nan
     return out, int(bad.sum())

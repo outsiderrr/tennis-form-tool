@@ -52,7 +52,7 @@ def load_clip(video, t_contact, before, after):
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     lm = make_landmarker()
     frames, pts, rel = [], [], []
-    prev = None
+    prev, hs = None, []
     for fi in range(f0, f1):
         ok, frame = cap.read()
         if not ok:
@@ -60,11 +60,13 @@ def load_clip(video, t_contact, before, after):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = lm.detect_for_video(Image(image_format=ImageFormat.SRGB, data=rgb), int(fi * 1000 / fps))
         p = np.full((33, 3), np.nan, np.float32)
-        target = pick_target(res.pose_landmarks, w, h, prev)
+        target = pick_target(res.pose_landmarks, w, h, prev, float(np.median(hs)) if len(hs) >= 30 else None)
         if target is not None:
             for j, q in enumerate(target):
                 p[j] = (q.x * w, q.y * h, q.visibility)
-            prev = (float(p[:, 0].mean()), float(p[:, 1].mean()), float(p[:, 1].max() - p[:, 1].min()), 0)
+            hgt = float(p[:, 1].max() - p[:, 1].min())
+            prev = (float(p[:, 0].mean()), float(p[:, 1].mean()), hgt, 0)
+            hs.append(hgt)
         elif prev is not None:
             prev = (*prev[:3], prev[3] + 1)
         frames.append(frame)

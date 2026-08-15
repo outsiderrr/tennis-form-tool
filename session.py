@@ -5,7 +5,8 @@
   session.py <视频> --player me [--segments 0-180:定点,180-360:变化] [--label "8/22 背面"]
 产出（sessions/<player>/<日期时间>_<视频名>/）：
   landmarks.npz / overlay.mp4 / report.json / progress.md
-  annot/  四个维度的示意视频（取「典型挥拍」）
+  card.png  关键时刻卡（C 阶）：四个关键帧 + 口令 + 达标率
+  annot/    四个维度的示意视频（取「典型挥拍」）
 并打印进度表：本次 vs 上一次（同 player 的最近一次）vs 目标门槛。
 """
 import argparse
@@ -72,7 +73,7 @@ def main():
     run_dir = player_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/4] 姿态提取 {video.name} ...", flush=True)
+    print(f"[1/5] 姿态提取 {video.name} ...", flush=True)
     pts, times, fps = run_pose(video, args.start, args.end, run_dir, "overlay", args.width)
     # run_pose 写的是 overlay_overlay.mp4，改个名
     ov = run_dir / "overlay_overlay.mp4"
@@ -81,7 +82,7 @@ def main():
     npz = run_dir / "landmarks.npz"
     np.savez_compressed(npz, pts=pts, times=times, fps=fps)
 
-    print("[2/4] 指标与达标率 ...", flush=True)
+    print("[2/5] 指标与达标率 ...", flush=True)
     segs = parse_segments(args.segments)
     rep = report_one(npz, None, segs)
     rep["video"] = str(video)
@@ -90,7 +91,7 @@ def main():
     rep["run"] = run_name
     (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2))
 
-    print("[3/4] 进度表 ...", flush=True)
+    print("[3/5] 进度表 ...", flush=True)
     prev_dir = find_previous(player_dir, run_name)
     prev = json.loads((prev_dir / "report.json").read_text()) if prev_dir else None
     lines = [f"# 进度表 · {args.player} · {run_name}  {args.label}", ""]
@@ -119,15 +120,22 @@ def main():
     (run_dir / "progress.md").write_text(md)
     print("\n" + md + "\n")
 
+    print("[4/5] 关键时刻卡 ...", flush=True)
+    cmd = [sys.executable, str(ROOT / "card.py"), str(video), str(npz), "--report", str(run_dir / "report.json"),
+           "--out", str(run_dir / "card.png"), "--label", f"· {args.player} · {args.label}"]
+    if prev_dir:
+        cmd += ["--prev", str(prev_dir / "report.json")]
+    subprocess.run(cmd, cwd=str(ROOT), check=False)
+
     if not args.no_annot:
         t = typical_swing(rep)
         if t is not None:
-            print(f"[4/4] 示意视频（典型挥拍 t={t:.2f}s）...", flush=True)
+            print(f"[5/5] 示意视频（典型挥拍 t={t:.2f}s）...", flush=True)
             subprocess.run([sys.executable, str(ROOT / "annotate.py"), str(video), str(npz),
                             "--t", f"{t:.2f}", "--all", "--label", f"· {args.player} · {args.label}",
                             "--out", str(run_dir / "annot")], cwd=str(ROOT), check=False)
         else:
-            print("[4/4] 无可用挥拍，跳过示意视频")
+            print("[5/5] 无可用挥拍，跳过示意视频")
     print(f"\n完成：{run_dir}")
 
 
