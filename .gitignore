@@ -1,0 +1,5 @@
+.venv/
+out/
+models/*.task
+__pycache__/
+*.pyc
