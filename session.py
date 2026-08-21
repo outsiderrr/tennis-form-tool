@@ -63,6 +63,7 @@ def main():
     ap.add_argument("--start", type=float, default=0)
     ap.add_argument("--end", type=float, default=None)
     ap.add_argument("--no-annot", action="store_true")
+    ap.add_argument("--quick", action="store_true", help="场边快速模式：隔帧推理、不出叠加视频/卡片/示意视频，只出达标率表（约快 2.5 倍）")
     ap.add_argument("--width", type=int, default=1280)
     args = ap.parse_args()
 
@@ -74,7 +75,10 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[1/5] 姿态提取 {video.name} ...", flush=True)
-    pts, times, fps = run_pose(video, args.start, args.end, run_dir, "overlay", args.width)
+    pts, times, fps = run_pose(video, args.start, args.end, run_dir, "overlay", args.width,
+                               write_overlay=not args.quick, stride=2 if args.quick else 1)
+    if args.quick and fps < 25:
+        print(f"  注意：快速模式下有效帧率 {fps:.0f}fps，垫步占比会低估，只看站位/屈膝/留在下面")
     # run_pose 写的是 overlay_overlay.mp4，改个名
     ov = run_dir / "overlay_overlay.mp4"
     if ov.exists():
@@ -119,6 +123,10 @@ def main():
     md = "\n".join(lines)
     (run_dir / "progress.md").write_text(md)
     print("\n" + md + "\n")
+
+    if args.quick:
+        print(f"\n完成（快速模式）：{run_dir}")
+        return
 
     print("[4/5] 关键时刻卡 ...", flush=True)
     cmd = [sys.executable, str(ROOT / "card.py"), str(video), str(npz), "--report", str(run_dir / "report.json"),

@@ -97,7 +97,9 @@ def angle_deg(a, b, c):
     return float(np.degrees(np.arccos(cosv)))
 
 
-def run_pose(video, start, end, out_dir, name, overlay_width, det_conf=0.5):
+def run_pose(video, start, end, out_dir, name, overlay_width, det_conf=0.5, write_overlay=True, stride=1):
+    """stride>1 = 每 stride 帧推理一次（快速模式）；返回的 fps 已按 stride 折算。
+    write_overlay=False 跳过叠加视频编码（快速模式，省 ~30% 时间）。"""
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         sys.exit(f"无法打开视频: {video}")
@@ -125,27 +127,35 @@ def run_pose(video, start, end, out_dir, name, overlay_width, det_conf=0.5):
     prev_target = None
     accepted_heights = []  # 目标长期身高（像素），用于身份约束
 
-    writer = cv2.VideoWriter(str(out_dir / f"{name}_overlay.mp4"),
-                             cv2.VideoWriter_fourcc(*"avc1"), fps, (ow, oh))
-    if not writer.isOpened():  # avc1 不可用时退回 mp4v
+    writer = None
+    if write_overlay:
         writer = cv2.VideoWriter(str(out_dir / f"{name}_overlay.mp4"),
-                                 cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh))
+                                 cv2.VideoWriter_fourcc(*"avc1"), fps / stride, (ow, oh))
+        if not writer.isOpened():  # avc1 不可用时退回 mp4v
+            writer = cv2.VideoWriter(str(out_dir / f"{name}_overlay.mp4"),
+                                     cv2.VideoWriter_fourcc(*"mp4v"), fps / stride, (ow, oh))
 
-    n_frames = end_f - start_f
+    total = end_f - start_f
+    n_frames = (total + stride - 1) // stride
     pts = np.full((n_frames, 33, 3), np.nan, dtype=np.float32)  # x_px, y_px, visibility
     times = np.zeros(n_frames, dtype=np.float64)
 
-    for i in range(n_frames):
+    i = -1
+    for raw in range(total):
         ok, frame = cap.read()
         if not ok:
-            pts, times = pts[:i], times[:i]
+            i_done = raw // stride
+            pts, times = pts[:i_done], times[:i_done]
             break
-        ts_ms = int((start_f + i) * 1000 / fps)
-        times[i] = (start_f + i) / fps
+        if raw % stride:
+            continue
+        i = raw // stride
+        ts_ms = int((start_f + raw) * 1000 / fps)
+        times[i] = (start_f + raw) / fps
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = landmarker.detect_for_video(Image(image_format=ImageFormat.SRGB, data=rgb), ts_ms)
 
-        small = cv2.resize(frame, (ow, oh))
+        small = cv2.resize(frame, (ow, oh)) if writer is not None else None
         canonical = float(np.median(accepted_heights)) if len(accepted_heights) >= 30 else None
         lm = pick_target(result.pose_landmarks, w, h, prev_target, canonical)
         if lm is not None:
@@ -157,24 +167,27 @@ def run_pose(video, start, end, out_dir, name, overlay_width, det_conf=0.5):
             accepted_heights.append(hgt)
             if len(accepted_heights) > 900:
                 accepted_heights.pop(0)
-            draw = {j: (int(pts[i, j, 0] * scale), int(pts[i, j, 1] * scale))
-                    for j in range(33) if pts[i, j, 2] > VIS_TH and 0 <= pts[i, j, 1] < h}
-            for a, b in CONNECTIONS:
-                if a in draw and b in draw:
-                    cv2.line(small, draw[a], draw[b], (80, 220, 80), 2, cv2.LINE_AA)
-            for j, p in draw.items():
-                cv2.circle(small, p, 4, (60, 120, 255) if j in LEFT_IDS else (255, 160, 40), -1, cv2.LINE_AA)
+            if small is not None:
+                draw = {j: (int(pts[i, j, 0] * scale), int(pts[i, j, 1] * scale))
+                        for j in range(33) if pts[i, j, 2] > VIS_TH and 0 <= pts[i, j, 1] < h}
+                for a, b in CONNECTIONS:
+                    if a in draw and b in draw:
+                        cv2.line(small, draw[a], draw[b], (80, 220, 80), 2, cv2.LINE_AA)
+                for j, p in draw.items():
+                    cv2.circle(small, p, 4, (60, 120, 255) if j in LEFT_IDS else (255, 160, 40), -1, cv2.LINE_AA)
         elif prev_target is not None:
             prev_target = (*prev_target[:3], prev_target[3] + 1)
-        cv2.putText(small, f"t={times[i]:.2f}s", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        writer.write(small)
+        if writer is not None:
+            cv2.putText(small, f"t={times[i]:.2f}s", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            writer.write(small)
         if i % 600 == 0:
             print(f"  {i}/{n_frames} 帧", flush=True)
 
     cap.release()
-    writer.release()
+    if writer is not None:
+        writer.release()
     landmarker.close()
-    return pts, times, fps
+    return pts, times, fps / stride
 
 
 def compute_metrics(pts, times, fps):

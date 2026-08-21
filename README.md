@@ -25,6 +25,9 @@ mkdir -p models && curl -sL -o models/pose_landmarker_full.task \
 # 拍完一段 → 全流程：姿态 → 达标率 → 与上一次并排的进度表 → 四维度示意视频
 .venv/bin/python session.py <视频.MOV> --player me --segments "0-180:定点,180-360:变化" --label "8/22 背面"
 # 结果在 sessions/<player>/<时间>_<视频名>/：progress.md 进度表，card.png 关键时刻卡，annot/ 示意视频
+
+# 场边快速模式：只出达标率表，约 0.8 倍视频时长出结果（训练中场休息用；全量分析回家再跑）
+.venv/bin/python session.py <视频.MOV> --player me --quick --label "第2段"
 ```
 
 ## 关键时刻卡（C 阶）
