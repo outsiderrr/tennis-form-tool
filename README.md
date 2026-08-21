@@ -38,7 +38,11 @@ mkdir -p models && curl -sL -o models/pose_landmarker_full.task \
 
 ```bash
 # 单视频分析（骨骼叠加 + 脚步指标 + 挥拍片段切割）
-.venv/bin/python analyze.py <视频.MOV> [--start 秒] [--end 秒] [--cut-swings]
+.venv/bin/python analyze.py <视频.MOV> [--start 秒] [--end 秒] [--cut-swings] [--det-conf 0.5]
+# 人物在画面里较小（<30% 高）时可降 --det-conf 到 0.3；再低会出现「幽灵骨架」误检，宁可重拍
+
+# 侧面机位报告（真·侧面：镜头垂直于击球方向）：击球点在体前距离 / 真实膝角 / 弯腰 vs 屈膝
+.venv/bin/python side.py <视频> <landmarks.npz> [--label ...]
 
 # 全套脚步体检 / 多视频对照 / 段落分列
 .venv/bin/python report.py out/A_landmarks.npz [out/B_landmarks.npz ...] [--segments 0-180:定点,180-360:变化]
@@ -64,6 +68,8 @@ compare.py 的击球时刻从 analyze.py 输出的 `swing_candidates` 里选；�
 - 手机架到胸口以上高度
 - 用 **240fps 慢动作**模式（60fps 常速在快速挥拍段有动作模糊）
 - 背面机位测脚步；侧面机位测引拍/击球点（另拍或双机同拍都行）
+- **侧面机位必须垂直于击球方向**（正手朝发球机打 → 相机在你右侧腰胸高、6–8 米、人占画面 ≥50%）。放在发球机方向 = 正面机位，侧面指标全部失效
+- 第二机位宁可近勿远：人 <30% 画面高会跌破检测门槛；降低 --det-conf 会引入背景误检
 - 双机位不需要同时按开始：两台各自开录整段不暂停，事后 `sync.py` 自动对齐；开拍时在两台都能看见的位置举手拍一下，峰更尖
 
 ## 已知局限

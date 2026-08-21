@@ -97,7 +97,7 @@ def angle_deg(a, b, c):
     return float(np.degrees(np.arccos(cosv)))
 
 
-def run_pose(video, start, end, out_dir, name, overlay_width):
+def run_pose(video, start, end, out_dir, name, overlay_width, det_conf=0.5):
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         sys.exit(f"无法打开视频: {video}")
@@ -118,7 +118,7 @@ def run_pose(video, start, end, out_dir, name, overlay_width):
         ),
         running_mode=vision.RunningMode.VIDEO,
         num_poses=NUM_POSES,
-        min_pose_detection_confidence=0.5,
+        min_pose_detection_confidence=det_conf,
         min_tracking_confidence=0.5,
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
@@ -329,6 +329,7 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--cut-swings", action="store_true", help="按挥拍候选切出 ±2s 叠加片段到 out/swings/")
+    ap.add_argument("--det-conf", type=float, default=0.5, help="姿态检测置信度；人物在画面里较小（<30%%）时降到 0.15-0.3")
     args = ap.parse_args()
 
     video = Path(args.video).expanduser()
@@ -337,7 +338,7 @@ def main():
     name = video.stem + (f"_{int(args.start)}s" if args.start else "")
 
     print(f"处理 {video.name} ...", flush=True)
-    pts, times, fps = run_pose(video, args.start, args.end, out_dir, name, args.width)
+    pts, times, fps = run_pose(video, args.start, args.end, out_dir, name, args.width, args.det_conf)
     np.savez_compressed(out_dir / f"{name}_landmarks.npz", pts=pts, times=times, fps=fps)
 
     metrics, series = compute_metrics(pts, times, fps)
